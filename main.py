@@ -1,4 +1,4 @@
-from time import sleep
+from time import sleep, time
 from math import floor
 from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
@@ -31,7 +31,6 @@ class StepperMotor:
 		self.motor.release()
 	
 	def move_relative(self, angle):
-		"""
 		backlash = 0.3 / self.cm_per_deg
 		
 		if self.forwards and angle < 0:
@@ -40,7 +39,6 @@ class StepperMotor:
 		elif not self.forwards and angle > 0:
 			angle += backlash
 			self.forwards = True
-		"""
 		
 		steps_needed = floor(self.steps_per_degree * angle)
 		
@@ -76,9 +74,10 @@ pump = LED("5")
 ROWS = 0
 COLS = 0
 well_size = 0
+pump_time = 0.0
 
 def calibrate():
-	global ROWS, COLS, well_size
+	global ROWS, COLS, well_size, pump_time
 	
 	ROWS = int(input("Enter number of rows: "))
 	COLS = int(input("Enter number of columns: "))
@@ -87,10 +86,10 @@ def calibrate():
 	print("Use the following prompts to center the tubing above the first well.")
 	print("This will be the closest to the stepper motors. Enter distances in")
 	print("cm until the tubing is centered. Positive distance indicates motion")
-	print("away from the motor, negative indicates distance towards. When you")
+	print("away from the motor, negative indicates motion towards. When you")
 	print("are done, enter a number greater than 17 or less than -17 to exit.\n")
 	
-	dist = -1
+	dist = -0.1
 	while -17 <= dist <= 17:
 		table_motor.move_dist_relative(dist)
 		dist = float(input("How much should the table move? "))
@@ -98,28 +97,35 @@ def calibrate():
 	
 	print()
 	
-	dist = -1
+	dist = -0.1
 	while -17 <= dist <= 17:
 		carriage_motor.move_dist_relative(dist)
 		dist = float(input("How much should the carriage move? "))
 	carriage_motor.tare()
 	
-	print("The pump will now be turned on for calibration. Press enter to turn")
+	print("\nThe pump will now be turned on for calibration. Press enter to turn")
 	print("it on, and press enter immediately after a single drop falls out of")
-	print("the tubing.")
+	print("the tubing.\n")
 	
 	input("Press enter to start the pump.")
 	pump.on()
 	input("Press enter to stop the pump.")
 	pump.off()
 	
+	pump_speed = float(input("\nEnter the pump rate in cc/hr: "))
+	desired_volume = float(input("Enter the desired volume in cc: "))
+	
+	pump_time = desired_volume / (pump_speed / 3600.0)
+	
+	print("\nPump time:", pump_time)
+	
+	print("---------------------------------------------------------------------")
 	response = "n"
 	while response != "y" and response != "Y":
 		response = str(input("Begin fractionation ? [Y/N]"))
 
 def movement():
 	
-	print("---------------------------------------------------------------------")
 	print("Beginning movement...")
 	
 	carriage_forwards = True
@@ -128,19 +134,15 @@ def movement():
 		for m in range(0, ROWS):
 			print("Moving to (" + str(n) + ", " + str(m) + ")")
 			if m > 0:
-				carriage_motor.move_dist_relative(well_size * 1 if carriage_forwards else -1)
+				carriage_motor.move_dist_relative(well_size * (1 if carriage_forwards else -1))
 			pump.on()
-			sleep(6)
+			sleep(pump_time)
 			pump.off()
-			sleep(1)
+			sleep(pump_time)
 		print("Moving to (" + str(n) + ", 0)")
 		table_motor.move_dist_relative(-well_size)
 		sleep(1)
 		carriage_forwards = not carriage_forwards
-	
-	print("Resetting...")
-	table_motor.move_dist_absolute(0)
-	carriage_motor.move_dist_absolute(0)
 	
 	print("Fractionation finished!")
 
