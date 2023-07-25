@@ -3,6 +3,7 @@ from math import floor
 from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
 from gpiozero import LED
+import tkinter as tk
 
 """
 StepperMotor Class
@@ -63,6 +64,17 @@ class StepperMotor:
 		
 	def move_dist_absolute(self, dist):
 		self.move_absolute(dist / self.cm_per_deg)
+		
+class TextEntry:
+	def __init__(self, window, text, row):
+		self.label = tk.Label(text=text)
+		self.label.grid(row=row, column=0, columnspan=1)
+		self.var = tk.StringVar()
+		self.entry = tk.Entry(window, textvariable=self.var)
+		self.entry.grid(row=row, column=1, columnspan=2, sticky="we")
+	
+	def get(self):
+		return self.var.get()
 
 NEMA_17_STEPS_PER_DEGREE = 3200.0 / 360.0
 LEAD_SCREW_PITCH_IN_CM = 4.0
@@ -76,78 +88,106 @@ COLS = 0
 well_size = 0
 pump_time = 0.0
 
-def calibrate():
+window = tk.Tk()
+window.title("Robotic Fractionator GUI v0.1")
+#window.geometry("800x600")
+
+rows_text_entry = TextEntry(window, "Enter # of rows:", 0)
+cols_text_entry = TextEntry(window, "Enter # of columns:", 1)
+ws_text_entry = TextEntry(window, "Enter well size in cm:", 2)
+pump_rate_text_entry = TextEntry(window, "Enter pump rate in cc/hr:", 3)
+vol_text_entry = TextEntry(window, "Enter desired volume in cc:", 4)
+
+tk.Label(text="Move table to: ").grid(row=5, column=0, columnspan=1)
+tk.Label(text="Move carriage to: ").grid(row=6, column=0, columnspan=1)
+table_entry = tk.Entry(window)
+table_entry.grid(row=5, column=1, columnspan=1)
+carriage_entry = tk.Entry(window)
+carriage_entry.grid(row=6, column=1, columnspan=1)
+
+for i in range(3):
+	window.grid_columnconfigure(i, weight=1, uniform="a")
+
+def set_table_carriage():
+	table_motor.move_dist_absolute(float(table_entry.get()))
+	carriage_motor.move_dist_absolute(float(carriage_entry.get()))
+
+table_motor.move_dist_relative(-0.1)
+carriage_motor.move_dist_relative(-0.1)
+
+movement_btn = tk.Button(window, text="Move", command=set_table_carriage)
+movement_btn.grid(row=5, column=2, columnspan=1, rowspan=2, sticky="we")
+
+canvas = tk.Canvas(window, width=500, height=300, bd=0, highlightthickness=0)
+canvas.grid(row = 10, column = 0, columnspan=3)
+
+pump_is_on = False
+def toggle_pump():
+	global pump_is_on
+	
+	pump_is_on = not pump_is_on
+	if pump_is_on:
+		pump.on()
+	else:
+		pump.off()
+		
+pump_btn = tk.Button(window, text="Toggle pump", command=toggle_pump)
+pump_btn.grid(row=7, column=0, columnspan=3, sticky="we")
+
+progress_lbl = tk.Label(text="System idle.")
+progress_lbl.grid(row=9, column=0, columnspan=3, sticky="we")
+
+def run_checks():
 	global ROWS, COLS, well_size, pump_time
 	
-	ROWS = int(input("Enter number of rows: "))
-	COLS = int(input("Enter number of columns: "))
-	well_size = float(input("Enter well size in cm: "))
-	print("---------------------------------------------------------------------")
-	print("Use the following prompts to center the tubing above the first well.")
-	print("This will be the closest to the stepper motors. Enter distances in")
-	print("cm until the tubing is centered. Positive distance indicates motion")
-	print("away from the motor, negative indicates motion towards. When you")
-	print("are done, enter a number greater than 17 or less than -17 to exit.\n")
+	ROWS = int(rows_text_entry.get())
+	COLS = int(cols_text_entry.get())
+	well_size = float(ws_text_entry.get())
 	
-	dist = -0.1
-	while -17 <= dist <= 17:
-		table_motor.move_dist_relative(dist)
-		dist = float(input("How much should the table move? "))
-	table_motor.tare()
+	pump_time = float(vol_text_entry.get()) / (float(pump_rate_text_entry.get()) / 3600)
 	
-	print()
-	
-	dist = -0.1
-	while -17 <= dist <= 17:
-		carriage_motor.move_dist_relative(dist)
-		dist = float(input("How much should the carriage move? "))
-	carriage_motor.tare()
-	
-	print("\nThe pump will now be turned on for calibration. Press enter to turn")
-	print("it on, and press enter immediately after a single drop falls out of")
-	print("the tubing.\n")
-	
-	input("Press enter to start the pump.")
-	pump.on()
-	input("Press enter to stop the pump.")
-	pump.off()
-	
-	pump_speed = float(input("\nEnter the pump rate in cc/hr: "))
-	desired_volume = float(input("Enter the desired volume in cc: "))
-	
-	pump_time = desired_volume / (pump_speed / 3600.0)
-	
-	print("\nPump time:", pump_time)
-	
-	print("---------------------------------------------------------------------")
-	response = "n"
-	while response != "y" and response != "Y":
-		response = str(input("Begin fractionation ? [Y/N]"))
+	if ROWS != 0 and COLS != 0 and well_size != 0 and pump_time != 0:
+		movement()
 
 def movement():
+	global canvas, progress_lbl
 	
-	print("Beginning movement...")
+	canvas.create_rectangle(0, 0, COLS * 25 + 5, ROWS * 25 + 5, fill="black")
+	window.update()
+	
+	table_motor.tare()
+	carriage_motor.tare()
 	
 	carriage_forwards = True
 	
+	progress_lbl["text"] = "Fractionation in progress..."
+	
 	for n in range(0, COLS):
 		for m in range(0, ROWS):
-			print("Moving to (" + str(n) + ", " + str(m) + ")")
 			if m > 0:
 				carriage_motor.move_dist_relative(well_size * (1 if carriage_forwards else -1))
+			x1, x2 = 5 + 25 * n, 25 + 25 * n
+			y_pos = m if carriage_forwards else ROWS - 1 - m
+			y1, y2 = 5 + 25 * y_pos, 25 + 25 * y_pos
+			
 			pump.on()
+			canvas.create_rectangle(x1, y1, x2, y2, fill="green")
+			window.update()
 			sleep(pump_time)
 			pump.off()
+			canvas.create_rectangle(x1, y1, x2, y2, fill="blue")
+			window.update()
 			sleep(pump_time)
-		print("Moving to (" + str(n) + ", 0)")
 		table_motor.move_dist_relative(-well_size)
 		sleep(1)
 		carriage_forwards = not carriage_forwards
 	
-	print("Fractionation finished!")
+	progress_lbl["text"] = "Fractionation finished!"
 
-calibrate()
-movement()
+btn = tk.Button(window, text="Begin fractionation", command=run_checks)
+btn.grid(row=8, column=0, columnspan=3, sticky="we")
+
+window.mainloop()
 
 table_motor.release()
 carriage_motor.release()
