@@ -4,6 +4,7 @@ from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
 from gpiozero import LED
 import tkinter as tk
+import json
 
 """
 StepperMotor Class
@@ -90,7 +91,6 @@ pump_time = 0.0
 
 window = tk.Tk()
 window.title("Robotic Fractionator GUI v0.1")
-#window.geometry("800x600")
 
 rows_text_entry = TextEntry(window, "Enter # of rows:", 0)
 cols_text_entry = TextEntry(window, "Enter # of columns:", 1)
@@ -114,6 +114,12 @@ def set_table_carriage():
 
 table_motor.move_dist_relative(-0.1)
 carriage_motor.move_dist_relative(-0.1)
+
+json_spec = open("custom_96_well_plate.json")
+data = json.load(json_spec)
+
+table_motor.move_dist_relative(15 - data["wells"]["A1"]["x"] * 0.1)
+carriage_motor.move_dist_relative(0.1 * (data["dimensions"]["yDimension"] - data["wells"]["A1"]["y"]) - 0.5)
 
 movement_btn = tk.Button(window, text="Move", command=set_table_carriage)
 movement_btn.grid(row=5, column=2, columnspan=1, rowspan=2, sticky="we")
