@@ -6,6 +6,9 @@ from gpiozero import LED
 import tkinter as tk
 import json
 
+NEMA_17_STEPS_PER_DEGREE = 3200.0 / 360.0
+LEAD_SCREW_PITCH_IN_CM = 4.0
+
 """
 StepperMotor Class
 
@@ -76,124 +79,426 @@ class TextEntry:
 	
 	def get(self):
 		return self.var.get()
-
-NEMA_17_STEPS_PER_DEGREE = 3200.0 / 360.0
-LEAD_SCREW_PITCH_IN_CM = 4.0
-
-table_motor = StepperMotor(2, NEMA_17_STEPS_PER_DEGREE, LEAD_SCREW_PITCH_IN_CM, True)
-carriage_motor = StepperMotor(1, NEMA_17_STEPS_PER_DEGREE, LEAD_SCREW_PITCH_IN_CM, True)
-pump = LED("5")
-
-ROWS = 0
-COLS = 0
-well_size = 0
-pump_time = 0.0
-
-window = tk.Tk()
-window.title("Robotic Fractionator GUI v0.1")
-
-rows_text_entry = TextEntry(window, "Enter # of rows:", 0)
-cols_text_entry = TextEntry(window, "Enter # of columns:", 1)
-ws_text_entry = TextEntry(window, "Enter well size in cm:", 2)
-pump_rate_text_entry = TextEntry(window, "Enter pump rate in cc/hr:", 3)
-vol_text_entry = TextEntry(window, "Enter desired volume in cc:", 4)
-
-tk.Label(text="Move table to: ").grid(row=5, column=0, columnspan=1)
-tk.Label(text="Move carriage to: ").grid(row=6, column=0, columnspan=1)
-table_entry = tk.Entry(window)
-table_entry.grid(row=5, column=1, columnspan=1)
-carriage_entry = tk.Entry(window)
-carriage_entry.grid(row=6, column=1, columnspan=1)
-
-for i in range(3):
-	window.grid_columnconfigure(i, weight=1, uniform="a")
-
-def set_table_carriage():
-	table_motor.move_dist_absolute(float(table_entry.get()))
-	carriage_motor.move_dist_absolute(float(carriage_entry.get()))
-
-table_motor.move_dist_relative(-0.1)
-carriage_motor.move_dist_relative(-0.1)
-
-json_spec = open("custom_96_well_plate.json")
-data = json.load(json_spec)
-
-table_motor.move_dist_relative(15 - data["wells"]["A1"]["x"] * 0.1)
-carriage_motor.move_dist_relative(0.1 * (data["dimensions"]["yDimension"] - data["wells"]["A1"]["y"]) - 0.5)
-
-movement_btn = tk.Button(window, text="Move", command=set_table_carriage)
-movement_btn.grid(row=5, column=2, columnspan=1, rowspan=2, sticky="we")
-
-canvas = tk.Canvas(window, width=500, height=300, bd=0, highlightthickness=0)
-canvas.grid(row = 10, column = 0, columnspan=3)
-
-pump_is_on = False
-def toggle_pump():
-	global pump_is_on
-	
-	pump_is_on = not pump_is_on
-	if pump_is_on:
-		pump.on()
-	else:
-		pump.off()
 		
-pump_btn = tk.Button(window, text="Toggle pump", command=toggle_pump)
-pump_btn.grid(row=7, column=0, columnspan=3, sticky="we")
-
-progress_lbl = tk.Label(text="System idle.")
-progress_lbl.grid(row=9, column=0, columnspan=3, sticky="we")
-
-def run_checks():
-	global ROWS, COLS, well_size, pump_time
+	def set(self, text):
+		self.entry.delete(0, tk.END)
+		self.entry.insert(0, text)
+		
+	def grid_forget(self):
+		self.label.grid_forget()
+		self.entry.grid_forget()
+		
+class App(tk.Tk):
+	def __init__(self):
+		super().__init__()
+		self.title("Robotic Fractionator GUI v0.1")
+		
+		self.mode = "Automated"
+		self.mode_btn = tk.Button(self, text="Mode: Automated", command=self.cycle_mode)
+		self.mode_btn.grid(row=0, column=0, columnspan=3, sticky="we")
+		
+		self.set_mode_automated(True)
 	
-	ROWS = int(rows_text_entry.get())
-	COLS = int(cols_text_entry.get())
-	well_size = float(ws_text_entry.get())
-	
-	pump_time = float(vol_text_entry.get()) / (float(pump_rate_text_entry.get()) / 3600)
-	
-	if ROWS != 0 and COLS != 0 and well_size != 0 and pump_time != 0:
-		movement()
-
-def movement():
-	global canvas, progress_lbl
-	
-	canvas.create_rectangle(0, 0, COLS * 25 + 5, ROWS * 25 + 5, fill="black")
-	window.update()
-	
-	table_motor.tare()
-	carriage_motor.tare()
-	
-	carriage_forwards = True
-	
-	progress_lbl["text"] = "Fractionation in progress..."
-	
-	for n in range(0, COLS):
-		for m in range(0, ROWS):
-			if m > 0:
-				carriage_motor.move_dist_relative(well_size * (1 if carriage_forwards else -1))
-			x1, x2 = 5 + 25 * n, 25 + 25 * n
-			y_pos = m if carriage_forwards else ROWS - 1 - m
-			y1, y2 = 5 + 25 * y_pos, 25 + 25 * y_pos
+	def cycle_mode(self):
+		if self.mode == "Automated":
+			self.mode = "Manual"
+			self.set_mode_manual()
+		elif self.mode == "Manual":
+			self.mode = "Cleaning"
+			self.set_mode_cleaning()
+		elif self.mode == "Cleaning":
+			self.mode = "Automated"
+			self.set_mode_automated(False)
+		
+		self.mode_btn["text"] = "Mode: " + self.mode
+		
+	def set_mode_automated(self, first):
+		if not first:
+			self.carriage_lbl.grid_forget()
+			self.carriage_entry.grid_forget()
+			self.movement_btn.grid_forget()
+			self.pump_btn.grid_forget()
+			self.progress_lbl.grid_forget()
+		else:
+			self.step_lbl = tk.Label(text="")
+			self.step_forwards_btn = tk.Button(self, text="", command=lambda: self.manual_step(True))
+			self.step_backwards_btn = tk.Button(self, text="", command=lambda: self.manual_step(False))
+		
+		self.json_lbl = tk.Label(text="Load well plate file: ")
+		self.json_lbl.grid(row=1, column=0, columnspan=1)
+		self.json_entry = tk.Entry(self)
+		self.json_entry.grid(row=1, column=1, columnspan=1)
+		
+		self.json_btn = tk.Button(self, text="Load", command=self.load_json)
+		self.json_btn.grid(row=1, column=2, columnspan=1, sticky="we")
+		
+		self.rows_text_entry = TextEntry(self, "Enter # of rows:", 2)
+		self.cols_text_entry = TextEntry(self, "Enter # of columns:", 3)
+		self.ws_text_entry = TextEntry(self, "Enter well size in cm:", 4)
+		self.pump_rate_text_entry = TextEntry(self, "Enter pump rate in cc/hr:", 5)
+		self.vol_text_entry = TextEntry(self, "Enter desired volume in cc:", 6)
+		
+		self.table_lbl = tk.Label(text="Move table to: ")
+		self.table_lbl.grid(row=7, column=0, columnspan=1)
+		self.carriage_lbl = tk.Label(text="Move carriage to: ")
+		self.carriage_lbl.grid(row=8, column=0, columnspan=1)
+		self.table_entry = tk.Entry(self)
+		self.table_entry.grid(row=7, column=1, columnspan=1)
+		self.carriage_entry = tk.Entry(self)
+		self.carriage_entry.grid(row=8, column=1, columnspan=1)
+		
+		self.movement_btn = tk.Button(self, text="Move", command=self.set_table_carriage)
+		self.movement_btn.grid(row=7, column=2, columnspan=1, rowspan=2, sticky="we")
+		
+		for i in range(3):
+			self.grid_columnconfigure(i, weight=1, uniform="a")
 			
-			pump.on()
-			canvas.create_rectangle(x1, y1, x2, y2, fill="green")
-			window.update()
-			sleep(pump_time)
-			pump.off()
-			canvas.create_rectangle(x1, y1, x2, y2, fill="blue")
-			window.update()
-			sleep(pump_time)
-		table_motor.move_dist_relative(-well_size)
-		sleep(1)
-		carriage_forwards = not carriage_forwards
+		self.pump_btn = tk.Button(self, text="Toggle pump", command=self.toggle_pump)
+		self.pump_btn.grid(row=9, column=0, columnspan=3, sticky="we")
+		
+		self.btn = tk.Button(self, text="Begin fractionation", command=self.run_checks)
+		self.btn.grid(row=10, column=0, columnspan=3, sticky="we")
+		
+		self.pause_btn =tk.Button(self, text="Click to pause", command = self.toggle_pause)
+		self.pause_btn.grid(row=11, column=0,columnspan=3, sticky="we")
+		self.is_paused = False
+			
+		self.progress_lbl = tk.Label(text="System idle.")
+		self.progress_lbl.grid(row=12, column=0, columnspan=3, sticky="we")
+
+		self.canvas = tk.Canvas(self, width=500, height=300, bd=0, highlightthickness=0)
+		self.canvas.grid(row = 13, column = 0, columnspan=3)
+			
+		self.table_motor = StepperMotor(2, NEMA_17_STEPS_PER_DEGREE, LEAD_SCREW_PITCH_IN_CM, True)
+		self.carriage_motor = StepperMotor(1, NEMA_17_STEPS_PER_DEGREE, LEAD_SCREW_PITCH_IN_CM, True)
+		
+		if first:
+			self.pump = LED("5")
+		
+		self.table_motor.move_dist_relative(-0.1)
+		self.carriage_motor.move_dist_relative(-0.1)
+		self.pump_is_on = False
+		
+		self.ROWS = 0
+		self.COLS = 0
+		self.well_size = 0
+		self.pump_time = 0.0
+		
+		self.taskId = None
+		self.state = "idle"
+		
+		self.x = 0
+		self.y = 0
+		self.carriage_forwards = True
+		
+	def set_mode_manual(self):
+		self.json_lbl.grid_forget()
+		self.json_entry.grid_forget()
+		self.json_btn.grid_forget()
+		self.rows_text_entry.grid_forget()
+		self.cols_text_entry.grid_forget()
+		self.ws_text_entry.grid_forget()
+		self.pump_rate_text_entry.grid_forget()
+		self.vol_text_entry.grid_forget()
+		self.table_lbl.grid_forget()
+		self.table_entry.grid_forget()
+		self.pump_btn.grid_forget()
+		self.btn.grid_forget()
+		self.pause_btn.grid_forget()
+		self.progress_lbl.grid_forget()
+		self.canvas.grid_forget()
+		self.carriage_lbl.grid_forget()
+		self.carriage_entry.grid_forget()
+		self.movement_btn.grid_forget()
+		
+		
+		self.rows_text_entry = TextEntry(self, "Enter # of rows:", 1)
+		self.cols_text_entry = TextEntry(self, "Enter # of columns:", 2)
+		self.ws_text_entry = TextEntry(self, "Enter well size in cm:", 3)
+		
+		self.table_lbl = tk.Label(text="Move table to: ")
+		self.table_lbl.grid(row=4, column=0, columnspan=1)
+		self.carriage_lbl = tk.Label(text="Move carriage to: ")
+		self.carriage_lbl.grid(row=5, column=0, columnspan=1)
+		self.table_entry = tk.Entry(self)
+		self.table_entry.grid(row=4, column=1, columnspan=1)
+		self.carriage_entry = tk.Entry(self)
+		self.carriage_entry.grid(row=5, column=1, columnspan=1)
+		
+		self.movement_btn = tk.Button(self, text="Move", command=self.set_table_carriage)
+		self.movement_btn.grid(row=4, column=2, columnspan=1, rowspan=2, sticky="we")
+		
+		self.step_lbl = tk.Label(text="Move the needle one step:")
+		self.step_lbl.grid(row=6, column=0, columnspan=1, sticky="we")
+		self.step_forwards_btn = tk.Button(self, text="Forwards", command=lambda: self.manual_step(True))
+		self.step_forwards_btn.grid(row=6, column=1, columnspan=1, sticky="we")
+		self.step_backwards_btn = tk.Button(self, text="Backwards", command=lambda: self.manual_step(False))
+		self.step_backwards_btn.grid(row=6, column=2, columnspan=1, sticky="we")
+		
+		for i in range(3):
+			self.grid_columnconfigure(i, weight=1, uniform="a")
+			
+		self.pump_btn = tk.Button(self, text="Toggle pump", command=self.toggle_pump)
+		self.pump_btn.grid(row=7, column=0, columnspan=3, sticky="we")
+		
+		self.canvas = tk.Canvas(self, width=500, height=300, bd=0, highlightthickness=0)
+		self.canvas.grid(row = 8, column = 0, columnspan=3)
+		
+		self.ROWS = 0
+		self.COLS = 0
+		self.well_size = 0
+		
+		self.x = 0
+		self.y = 0
+		self.carriage_forwards = True
+		
+		
+	def set_mode_cleaning(self):
+		self.rows_text_entry.grid_forget()
+		self.cols_text_entry.grid_forget()
+		self.ws_text_entry.grid_forget()
+		self.pump_btn.grid_forget()
+		self.canvas.grid_forget()
+		self.movement_btn.grid_forget()
+		self.step_lbl.grid_forget()
+		self.step_forwards_btn.grid_forget()
+		self.step_backwards_btn.grid_forget()
+		
+		self.carriage_lbl = tk.Label(text="Move carriage to: ")
+		self.carriage_lbl.grid(row=1, column=0, columnspan=1)
+		self.carriage_entry = tk.Entry(self)
+		self.carriage_entry.grid(row=1, column=1, columnspan=1)
+		self.carriage_entry.delete(0, tk.END)
+		self.carriage_entry.insert(0, "14.0")
+		
+		self.movement_btn = tk.Button(self, text="Move", command=self.set_table_carriage)
+		self.movement_btn.grid(row=1, column=2, columnspan=1, sticky="we")
+		
+		for i in range(3):
+			self.grid_columnconfigure(i, weight=1, uniform="a")
+			
+		self.pump_btn = tk.Button(self, text="Toggle pump", command=self.toggle_pump)
+		self.pump_btn.grid(row=2, column=0, columnspan=3, sticky="we")
+			
+		self.progress_lbl = tk.Label(text="System idle.")
+		self.progress_lbl.grid(row=3, column=0, columnspan=3, sticky="we")
+		
+		self.table_motor.move_dist_relative(-0.1)
+		self.carriage_motor.move_dist_relative(-0.1)
+		self.pump_is_on = False
+		self.carriage_forwards = True
+			
+	def load_json(self):
+		json_spec = open(self.json_entry.get())
+		data = json.load(json_spec)
 	
-	progress_lbl["text"] = "Fractionation finished!"
+		r = len(data["ordering"][0])
+		c = len(data["ordering"])
+	
+		self.rows_text_entry.set(str(r))
+		self.cols_text_entry.set(str(c))
+		self.ws_text_entry.set(str(abs(data["wells"]["A1"]["y"] - data["wells"]["B1"]["y"]) / 10.0))
+	
+		self.table_entry.delete(0, tk.END)
+		self.table_entry.insert(0, str(15 - data["wells"]["A1"]["x"] * 0.1))
 
-btn = tk.Button(window, text="Begin fractionation", command=run_checks)
-btn.grid(row=8, column=0, columnspan=3, sticky="we")
+		self.carriage_entry.delete(0, tk.END)
+		self.carriage_entry.insert(0, str(0.1 * (data["dimensions"]["yDimension"] - data["wells"]["A1"]["y"]) - 0.5))
+	
+	def set_table_carriage(self):
+		
+		if self.table_entry.get() != '':
+			self.table_motor.move_dist_absolute(float(self.table_entry.get()))
+		
+		if self.carriage_entry.get() != '':
+			self.carriage_motor.move_dist_absolute(float(self.carriage_entry.get()))
+		
+	def toggle_pump(self):
+	
+		self.pump_is_on = not self.pump_is_on
+		if self.pump_is_on:
+			self.pump.on()
+			if self.mode == "Cleaning":
+				self.progress_lbl["text"] = "System cleaning."
+		else:
+			self.pump.off()
+			if self.mode == "Cleaning":
+				self.progress_lbl["text"] = "System idle."
+			
+	def toggle_pause(self):
+		self.is_paused = not self.is_paused
+		
+		if self.is_paused:
+			if self.taskId is not None:
+				self.after_cancel(self.taskId)
+				self.pump.off()
+			self.pause_btn["text"] = "Click to unpause"
+			self.progress_lbl["text"] = "Fractionation paused..."
+		else:
+			self.pause_btn["text"] = "Click to pause"
+			self.progress_lbl["text"] = "Fractionation in progress..."
+			
+			if self.state == "pump":
+				self.stop_pump()
+			elif self.state == "wait":
+				self.move()
+			elif self.state == "move":
+				self.pump()
+				
+			
+	def run_checks(self):
+	
+		self.ROWS = int(self.rows_text_entry.get())
+		self.COLS = int(self.cols_text_entry.get())
+		self.well_size = float(self.ws_text_entry.get())
+	
+		self.pump_time = float(self.vol_text_entry.get()) / (float(self.pump_rate_text_entry.get()) / 3600)
+	
+		if self.ROWS != 0 and self.COLS != 0 and self.well_size != 0 and self.pump_time != 0:
+			self.movement()
+			
+	def movement(self):
+		self.canvas.create_rectangle(0, 0, self.COLS * 25 + 5, self.ROWS * 25 + 5, fill="black")
+		self.update()
+	
+		self.carriage_forwards = True
+	
+		self.progress_lbl["text"] = "Fractionation in progress..."
+		
+		self.x = 0
+		self.y = 0
+		
+		self.pump_liquid()
+		
+	def move(self):
+		self.state = "move"
+		if self.carriage_forwards:
+			self.y = self.y + 1
+			if self.y < self.ROWS:
+				self.carriage_motor.move_dist_relative(self.well_size)
+			else:
+				self.y = self.ROWS - 1
+				self.table_motor.move_dist_relative(-self.well_size)
+				self.x = self.x + 1
+				self.carriage_forwards = not self.carriage_forwards
+		else:
+			self.y = self.y - 1
+			if self.y >= 0:
+				self.carriage_motor.move_dist_relative(-self.well_size)
+			else:
+				self.y = 0
+				self.table_motor.move_dist_relative(-self.well_size)
+				self.x = self.x + 1
+				self.carriage_forwards = not self.carriage_forwards
+			
+		if self.is_paused:
+			return
+		
+		if self.x == self.COLS:
+			self.progress_lbl["text"] = "Fractionation finished!"
+			self.carriage_return()
+		else:
+			self.pump_liquid()
+		
+	def pump_liquid(self):
+		self.state = "pump"
+		self.pump.on()
+		x1, x2 = 5 + 25 * self.x, 25 + 25 * self.x
+		y1, y2 = 5 + 25 * self.y, 25 + 25 * self.y
+		self.canvas.create_rectangle(x1, y1, x2, y2, fill="green")
+		self.taskId = self.after(round(self.pump_time * 1000), self.stop_pump)
+	
+	def stop_pump(self):
+		self.state = "wait"
+		self.pump.off()
+		x1, x2 = 5 + 25 * self.x, 25 + 25 * self.x
+		y1, y2 = 5 + 25 * self.y, 25 + 25 * self.y
+		self.canvas.create_rectangle(x1, y1, x2, y2, fill="blue")
+		self.taskId = self.after(round(self.pump_time * 1000), self.move)
+		
+	def carriage_return(self):
+		self.table_motor.move_dist_absolute(0.0)
+		self.carriage_motor.move_dist_absolute(0.0)
+		
+	def manual_step(self, forwards):
+		
+		self.ROWS = int(self.rows_text_entry.get())
+		self.COLS = int(self.cols_text_entry.get())
+		self.well_size = float(self.ws_text_entry.get())
+		
+		self.canvas.create_rectangle(0, 0, self.COLS * 25 + 5, self.ROWS * 25 + 5, fill="black")
+		for i in range(0, self.COLS):
+			for j in range(0, self.ROWS):
+				x1, x2 = 5 + 25 * i, 25 + 25 * i
+				y1, y2 = 5 + 25 * j, 25 + 25 * j
+				self.canvas.create_rectangle(x1, y1, x2, y2, fill="gray")
+		
+		if self.ROWS == 0 or self.COLS == 0 or self.well_size == 0:
+			return
+		
+		if forwards:
+			if self.x == self.COLS - 1 and self.y == (self.ROWS - 1 if self.COLS % 2 == 1 else 0):
+				x1, x2 = 5 + 25 * self.x, 25 + 25 * self.x
+				y1, y2 = 5 + 25 * self.y, 25 + 25 * self.y
+				self.canvas.create_rectangle(x1, y1, x2, y2, fill="yellow")
+		
+				self.update()
+				return
+			if self.carriage_forwards:
+				self.y = self.y + 1
+				if self.y < self.ROWS:
+					self.carriage_motor.move_dist_relative(self.well_size)
+				else:
+					self.y = self.ROWS - 1
+					self.table_motor.move_dist_relative(-self.well_size)
+					self.x = self.x + 1
+					self.carriage_forwards = not self.carriage_forwards
+			else:
+				self.y = self.y - 1
+				if self.y >= 0:
+					self.carriage_motor.move_dist_relative(-self.well_size)
+				else:
+					self.y = 0
+					self.table_motor.move_dist_relative(-self.well_size)
+					self.x = self.x + 1
+					self.carriage_forwards = not self.carriage_forwards
+		else:
+			if self.x == 0 and self.y == 0:
+				x1, x2 = 5 + 25 * self.x, 25 + 25 * self.x
+				y1, y2 = 5 + 25 * self.y, 25 + 25 * self.y
+				self.canvas.create_rectangle(x1, y1, x2, y2, fill="yellow")
+		
+				self.update()
+				return
+			if self.carriage_forwards:
+				self.y = self.y - 1
+				if self.y >= 0:
+					self.carriage_motor.move_dist_relative(-self.well_size)
+				else:
+					self.y = 0
+					self.table_motor.move_dist_relative(self.well_size)
+					self.x = self.x - 1
+					self.carriage_forwards = not self.carriage_forwards
+			else:
+				self.y = self.y + 1
+				if self.y < self.ROWS:
+					self.carriage_motor.move_dist_relative(self.well_size)
+				else:
+					self.y = self.ROWS - 1
+					self.table_motor.move_dist_relative(self.well_size)
+					self.x = self.x - 1
+					self.carriage_forwards = not self.carriage_forwards
+		
+		x1, x2 = 5 + 25 * self.x, 25 + 25 * self.x
+		y1, y2 = 5 + 25 * self.y, 25 + 25 * self.y
+		self.canvas.create_rectangle(x1, y1, x2, y2, fill="yellow")
+		
+		self.update()
 
-window.mainloop()
 
-table_motor.release()
-carriage_motor.release()
+app = App()
+
+app.mainloop()
+
+app.table_motor.release()
+app.carriage_motor.release()
